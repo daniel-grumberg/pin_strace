@@ -6,6 +6,10 @@
 #include "pin.H"
 #include <fstream>
 #include <iostream>
+#include <sys/syscall.h>
+
+#include <fcntl.h>
+#include <sys/mman.h>
 
 namespace {
 struct OStreamWrapper {
@@ -57,6 +61,155 @@ static INT32 usage() {
   return -1;
 }
 
+static bool isPrintable(char Ch) { return ((Ch >= ' ') && (Ch <= '~')); }
+
+static void printProtection(long Flags, std::ostream &Output) {
+  if (!Flags)
+    Output << "PROT_NONE";
+  else {
+    bool FirstFlag = true;
+
+    if (Flags & PROT_EXEC) {
+      Output << "PROT_EXEC";
+      FirstFlag = false;
+    }
+
+    if (Flags & PROT_READ) {
+      if (!FirstFlag)
+        Output << "|";
+      else
+        FirstFlag = false;
+      Output << "PROT_READ";
+    }
+
+    if (Flags & PROT_WRITE) {
+      if (!FirstFlag)
+        Output << "|";
+      else
+        FirstFlag = false;
+      Output << "PROT_WRITE";
+    }
+  }
+}
+
+
+static void printMmapFlags(long Flags, std::ostream &Output) {
+  if (Flags & MAP_SHARED)
+    Output << "MAP_SHARED";
+  else
+    Output << "MAP_PRIVATE";
+
+  if (Flags & MAP_32BIT)
+    Output << "|MAP_32BIT";
+
+  if (Flags & MAP_ANONYMOUS)
+    Output << "|MAP_ANONYMOUS";
+
+  if (Flags & MAP_DENYWRITE)
+    Output << "|MAP_DENYWRITE";
+
+  if (Flags & MAP_EXECUTABLE)
+    Output << "|MAP_EXECUTABLE";
+
+  if (Flags & MAP_FILE)
+    Output << "|MAP_FILE";
+
+  if (Flags & MAP_FIXED)
+    Output << "|MAP_FIXED";
+
+  if (Flags & MAP_GROWSDOWN)
+    Output << "|MAP_GROWSDOWN";
+
+  if (Flags & MAP_HUGETLB)
+    Output << "|MAP_HUGETLB";
+
+  if (Flags & MAP_LOCKED)
+    Output << "|MAP_LOCKED";
+
+  if (Flags & MAP_NONBLOCK)
+    Output << "|MAP_NONBLOCK";
+
+  if (Flags & MAP_NORESERVE)
+    Output << "|MAP_NORESERVE";
+
+  if (Flags & MAP_POPULATE)
+    Output << "|MAP_POPULATE";
+
+  if (Flags & MAP_STACK)
+    Output << "|MAP_STACK";
+
+  // if (Flags & MAP_UNINITIALIZED)
+  //    Output << "|MAP_UNINITIALIZED";
+}
+
+static bool printOpenFlags(long Flags, std::ostream &Output) {
+  bool Result = false;
+
+  if (Flags & O_RDWR)
+    Output << "O_RDWR";
+
+  else if (Flags & O_WRONLY)
+    Output << "O_WRONLY";
+
+  else
+    Output << "O_RDONLY";
+
+  // Creation and file status Flags
+  if (Flags & O_APPEND)
+    Output << "|O_APPEND";
+
+  if (Flags & O_ASYNC)
+    Output << "|O_ASYNC";
+
+  if (Flags & O_CLOEXEC)
+    Output << "|O_CLOEXEC";
+
+  if (Flags & O_CREAT) {
+    Output << "|O_CREAT";
+    Result = true;
+  }
+
+  if (Flags & O_DIRECT)
+    Output << "|O_DIRECT";
+
+  if (Flags & O_DIRECTORY)
+    Output << "|O_DIRECTORY";
+
+  if (Flags & O_DSYNC)
+    Output << "|O_DSYNC";
+
+  if (Flags & O_EXCL)
+    Output << "|O_EXCL";
+
+  if (Flags & O_NOATIME)
+    Output << "|O_NOATIME";
+
+  if (Flags & O_NOCTTY)
+    Output << "|O_NOCTTY";
+
+  if (Flags & O_NOFOLLOW)
+    Output << "|O_NOFOLLOW";
+
+  if (Flags & O_NONBLOCK)
+    Output << "|O_NONBLOCK";
+
+  if (Flags & O_PATH)
+    Output << "|O_PATH";
+
+  if (Flags & O_SYNC)
+    Output << "|O_SYNC";
+
+  if (Flags & O_TMPFILE) {
+    Output << "|O_TMPFILE";
+    Result = true;
+  }
+
+  if (Flags & O_TRUNC)
+    Output << "|O_TRUNC";
+
+  return Result;
+}
+
 /* ===================================================================== */
 // Analysis routines
 /* ===================================================================== */
@@ -68,7 +221,7 @@ static VOID SysBefore(std::ostream &Output, ADDRINT Ip, ADDRINT Nr,
 }
 
 static VOID SysAfter(std::ostream &Output, ADDRINT Ret) {
-  Output <<"and out.\n";
+  Output << "and out.\n";
 }
 
 /* ===================================================================== */
