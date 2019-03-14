@@ -1,2 +1,6 @@
 ### BUILD PRODUCTS ###
 obj-intel64/
+
+### EMACS STUFF ###
+.dir-locals.el
+.compile_commands.json
