@@ -24,8 +24,6 @@ static const SysEntry SysEntries[] = {
 #include "syscall_list.inc"
 };
 
-static FILE *Output = NULL;
-
 /* ===================================================================== */
 // Command line switches
 /* ===================================================================== */
@@ -285,7 +283,6 @@ static VOID SysBefore(FILE *Output, ADDRINT Ip, ADDRINT Nr, const long Args[]) {
   case __NR_read:
     fprintf(Output, "0x%lx", Args[0]);
     break;
-
   default:
     for (size_t Argno = 0; Argno < SysEntries[Nr].NumArgs; ++Argno) {
       if (!Argno)
@@ -312,7 +309,7 @@ static VOID SysAfter(FILE *Output, long Ret) {
 
 static VOID SyscallEntry(THREADID ThreadIndex, CONTEXT *Context,
                          SYSCALL_STANDARD Std, VOID *V) {
-  //FILE *Output = reinterpret_cast<FILE *>(V);
+  FILE *Output = reinterpret_cast<FILE *>(V);
 
   long LocalArgs[] = {(long)PIN_GetSyscallArgument(Context, Std, 0),
                       (long)PIN_GetSyscallArgument(Context, Std, 1),
@@ -327,23 +324,12 @@ static VOID SyscallEntry(THREADID ThreadIndex, CONTEXT *Context,
 
 static VOID SyscallExit(THREADID ThreadIndex, CONTEXT *Context,
                         SYSCALL_STANDARD Std, VOID *V) {
-  //FILE *Output = reinterpret_cast<FILE *>(V);
-
-  // Special case reads to get the read strings
-  if (PIN_GetSyscallNumber(Context, Std) == __NR_read) {
-    fputs(", ", Output);
-    const char *ReadString =
-        reinterpret_cast<const char *>(PIN_GetSyscallArgument(Context, Std, 1));
-    const long Length = PIN_GetSyscallArgument(Context, Std, 2);
-    printString(ReadString, Length, Output);
-    fprintf(Output, ", 0x%lX", Length);
-  }
-
+  FILE *Output = reinterpret_cast<FILE *>(V);
   SysAfter(Output, (long)PIN_GetSyscallReturn(Context, Std));
 }
 
 static VOID Fini(INT32 Code, VOID *V) {
-  //FILE *Output = reinterpret_cast<FILE *>(V);
+  FILE *Output = reinterpret_cast<FILE *>(V);
   fflush(Output);
   fclose(Output);
 }
@@ -365,7 +351,7 @@ int main(int argc, char *argv[]) {
               << std::endl;
     return -1;
   }
-  Output = fopen(FileName.c_str(), "w");
+  FILE *Output = fopen(FileName.c_str(), "w");
 
   std::cerr << "===============================================" << std::endl;
   std::cerr << "This application is instrumented by PinStrace" << std::endl;
