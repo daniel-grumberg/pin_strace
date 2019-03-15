@@ -280,9 +280,6 @@ static VOID SysBefore(FILE *Output, ADDRINT Ip, ADDRINT Nr, const long Args[]) {
     }
     break;
 
-  case __NR_read:
-    fprintf(Output, "0x%lx", Args[0]);
-    break;
   default:
     for (size_t Argno = 0; Argno < SysEntries[Nr].NumArgs; ++Argno) {
       if (!Argno)
