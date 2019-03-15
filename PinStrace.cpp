@@ -4,6 +4,8 @@
  */
 
 #include "pin.H"
+#include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <sys/syscall.h>
@@ -12,33 +14,17 @@
 #include <sys/mman.h>
 
 namespace {
-struct OStreamWrapper {
-public:
-  OStreamWrapper() : _Out(&std::clog), _IsFileStream(false) {}
-  OStreamWrapper(std::string &FileName) : _IsFileStream(true) {
-    _Out = new std::ofstream(FileName.c_str());
-  }
-
-  // Shallow is fine as we only delete in Fini
-  OStreamWrapper(const OStreamWrapper &Other) = default;
-  OStreamWrapper &operator=(const OStreamWrapper &Other) = default;
-
-  ~OStreamWrapper() {
-    *_Out << "\n";
-    _Out->flush();
-    if (_IsFileStream) {
-      std::ofstream *FileOut = static_cast<std::ofstream *>(_Out);
-      FileOut->close();
-      delete FileOut;
-    }
-  }
-  std::ostream &getStream() { return *_Out; }
-
-private:
-  std::ostream *_Out;
-  bool _IsFileStream;
+struct SysEntry {
+  size_t NumArgs;
+  const char *Name;
 };
 } // namespace
+
+static const SysEntry SysEntries[] = {
+#include "syscall_list.inc"
+};
+
+static FILE *Output = NULL;
 
 /* ===================================================================== */
 // Command line switches
@@ -54,174 +40,270 @@ KNOB<string> KnobOutputFile(KNOB_MODE_WRITEONCE, "pintool", "o", "",
  *  Print out help message.
  */
 static INT32 usage() {
-  cerr << "This tool implements strace via DBI with Intel Pin" << endl;
+  std::cerr << "This tool implements strace via DBI with Intel Pin"
+            << std::endl;
 
-  cerr << KNOB_BASE::StringKnobSummary() << endl;
+  std::cerr << KNOB_BASE::StringKnobSummary() << std::endl;
 
   return -1;
 }
 
-static bool isPrintable(char Ch) { return ((Ch >= ' ') && (Ch <= '~')); }
+static bool isPrintable(char C) { return ((C >= ' ') && (C <= '~')); }
 
-static void printProtection(long Flags, std::ostream &Output) {
+static void printProtection(long Flags, FILE *Output) {
   if (!Flags)
-    Output << "PROT_NONE";
+    fputs("PROT_NONE", Output);
   else {
     bool FirstFlag = true;
 
     if (Flags & PROT_EXEC) {
-      Output << "PROT_EXEC";
+      fputs("PROT_EXEC", Output);
       FirstFlag = false;
     }
 
     if (Flags & PROT_READ) {
       if (!FirstFlag)
-        Output << "|";
+        fputc('|', Output);
       else
         FirstFlag = false;
-      Output << "PROT_READ";
+      fputs("PROT_READ", Output);
     }
 
     if (Flags & PROT_WRITE) {
       if (!FirstFlag)
-        Output << "|";
+        fputc('|', Output);
       else
         FirstFlag = false;
-      Output << "PROT_WRITE";
+      fputs("PROT_WRITE", Output);
     }
   }
 }
 
-
-static void printMmapFlags(long Flags, std::ostream &Output) {
+static void printMmapFlags(long Flags, FILE *Output) {
   if (Flags & MAP_SHARED)
-    Output << "MAP_SHARED";
+    fputs("MAP_SHARED", Output);
   else
-    Output << "MAP_PRIVATE";
+    fputs("MAP_PRIVATE", Output);
 
   if (Flags & MAP_32BIT)
-    Output << "|MAP_32BIT";
+    fputs("|MAP_32BIT", Output);
 
   if (Flags & MAP_ANONYMOUS)
-    Output << "|MAP_ANONYMOUS";
+    fputs("|MAP_ANONYMOUS", Output);
 
   if (Flags & MAP_DENYWRITE)
-    Output << "|MAP_DENYWRITE";
+    fputs("|MAP_DENYWRITE", Output);
 
   if (Flags & MAP_EXECUTABLE)
-    Output << "|MAP_EXECUTABLE";
+    fputs("|MAP_EXECUTABLE", Output);
 
   if (Flags & MAP_FILE)
-    Output << "|MAP_FILE";
+    fputs("|MAP_FILE", Output);
 
   if (Flags & MAP_FIXED)
-    Output << "|MAP_FIXED";
+    fputs("|MAP_FIXED", Output);
 
   if (Flags & MAP_GROWSDOWN)
-    Output << "|MAP_GROWSDOWN";
+    fputs("|MAP_GROWSDOWN", Output);
 
   if (Flags & MAP_HUGETLB)
-    Output << "|MAP_HUGETLB";
+    fputs("|MAP_HUGETLB", Output);
 
   if (Flags & MAP_LOCKED)
-    Output << "|MAP_LOCKED";
+    fputs("|MAP_LOCKED", Output);
 
   if (Flags & MAP_NONBLOCK)
-    Output << "|MAP_NONBLOCK";
+    fputs("|MAP_NONBLOCK", Output);
 
   if (Flags & MAP_NORESERVE)
-    Output << "|MAP_NORESERVE";
+    fputs("|MAP_NORESERVE", Output);
 
   if (Flags & MAP_POPULATE)
-    Output << "|MAP_POPULATE";
+    fputs("|MAP_POPULATE", Output);
 
   if (Flags & MAP_STACK)
-    Output << "|MAP_STACK";
+    fputs("|MAP_STACK", Output);
 
   // if (Flags & MAP_UNINITIALIZED)
-  //    Output << "|MAP_UNINITIALIZED";
+  //    fputs("|MAP_UNINITIALIZED", Output);
 }
 
-static bool printOpenFlags(long Flags, std::ostream &Output) {
+static bool printOpenFlags(long Flags, FILE *Output) {
   bool Result = false;
 
   if (Flags & O_RDWR)
-    Output << "O_RDWR";
+    fputs("O_RDWR", Output);
 
   else if (Flags & O_WRONLY)
-    Output << "O_WRONLY";
+    fputs("O_WRONLY", Output);
 
   else
-    Output << "O_RDONLY";
+    fputs("O_RDONLY", Output);
 
   // Creation and file status Flags
   if (Flags & O_APPEND)
-    Output << "|O_APPEND";
+    fputs("|O_APPEND", Output);
 
   if (Flags & O_ASYNC)
-    Output << "|O_ASYNC";
+    fputs("|O_ASYNC", Output);
 
   if (Flags & O_CLOEXEC)
-    Output << "|O_CLOEXEC";
+    fputs("|O_CLOEXEC", Output);
 
   if (Flags & O_CREAT) {
-    Output << "|O_CREAT";
+    fputs("|O_CREAT", Output);
     Result = true;
   }
 
   if (Flags & O_DIRECT)
-    Output << "|O_DIRECT";
+    fputs("|O_DIRECT", Output);
 
   if (Flags & O_DIRECTORY)
-    Output << "|O_DIRECTORY";
+    fputs("|O_DIRECTORY", Output);
 
   if (Flags & O_DSYNC)
-    Output << "|O_DSYNC";
+    fputs("|O_DSYNC", Output);
 
   if (Flags & O_EXCL)
-    Output << "|O_EXCL";
+    fputs("|O_EXCL", Output);
 
   if (Flags & O_NOATIME)
-    Output << "|O_NOATIME";
+    fputs("|O_NOATIME", Output);
 
   if (Flags & O_NOCTTY)
-    Output << "|O_NOCTTY";
+    fputs("|O_NOCTTY", Output);
 
   if (Flags & O_NOFOLLOW)
-    Output << "|O_NOFOLLOW";
+    fputs("|O_NOFOLLOW", Output);
 
   if (Flags & O_NONBLOCK)
-    Output << "|O_NONBLOCK";
+    fputs("|O_NONBLOCK", Output);
 
   if (Flags & O_PATH)
-    Output << "|O_PATH";
+    fputs("|O_PATH", Output);
 
   if (Flags & O_SYNC)
-    Output << "|O_SYNC";
+    fputs("|O_SYNC", Output);
 
   if (Flags & O_TMPFILE) {
-    Output << "|O_TMPFILE";
+    fputs("|O_TMPFILE", Output);
     Result = true;
   }
 
   if (Flags & O_TRUNC)
-    Output << "|O_TRUNC";
+    fputs("|O_TRUNC", Output);
 
   return Result;
+}
+
+void printNonPrintable(char C, FILE *Output) {
+  switch (C) {
+  case '\n':
+    fputs("\\n", Output);
+    break;
+  case '\t':
+    fputs("\\t", Output);
+    break;
+  default:
+    fprintf(Output, "\\x%02X", C);
+    break;
+  }
+}
+
+void printString(const char *String, ADDRINT Length, FILE *Output) {
+  fputc('\"', Output);
+  for (size_t Ind = 0; (Length ? (Ind < Length) : true) && String[Ind]; Ind++) {
+    if (isPrintable(String[Ind]))
+      fputc(String[Ind], Output);
+    else
+      printNonPrintable(String[Ind], Output);
+  }
+  fputc('\"', Output);
 }
 
 /* ===================================================================== */
 // Analysis routines
 /* ===================================================================== */
 
-static VOID SysBefore(std::ostream &Output, ADDRINT Ip, ADDRINT Nr,
-                      ADDRINT Arg1, ADDRINT Arg2, ADDRINT Arg3, ADDRINT Arg4,
-                      ADDRINT Arg5, ADDRINT Arg6) {
-  Output << "In ";
+static VOID SysBefore(FILE *Output, ADDRINT Ip, ADDRINT Nr, const long Args[]) {
+  fprintf(Output, "%s(", SysEntries[Nr].Name);
+  // Special case for exit system calls... Can we intercept after this?
+  if ((Nr == __NR_exit) || (Nr == __NR_exit_group)) {
+    fprintf(Output, "%ld) = ?\n", Args[0]);
+    fflush(Output);
+  }
+
+  switch (Nr) {
+  case __NR_mprotect:
+    fprintf(Output, "0x%lX, 0x%lX, ", Args[0], Args[1]);
+    printProtection(Args[2], Output);
+    break;
+
+  case __NR_access:
+    printString(reinterpret_cast<const char *>(Args[0]), 0, Output);
+    fprintf(Output, ", %lX", Args[1]);
+    break;
+
+  case __NR_mmap:
+    for (size_t Argno = 0; Argno < SysEntries[Nr].NumArgs; ++Argno) {
+      if (!Argno)
+        fprintf(Output, "0x%lX", Args[Argno]);
+
+      else if (Argno == 2) {
+        fputs(", ", Output);
+        printProtection(Args[2], Output);
+      } else if (Argno == 3) {
+        fputs(", ", Output);
+        printMmapFlags(Args[3], Output);
+      } else
+        fprintf(Output, ", 0x%lX", Args[Argno]);
+    }
+    break;
+
+  case __NR_open:
+    printString(reinterpret_cast<const char *>(Args[0]), 0, Output);
+    fputs(", ", Output);
+    if (printOpenFlags(Args[1], Output)) {
+      fprintf(Output, ", %lo", Args[2]);
+    }
+    break;
+
+  case __NR_write:
+    for (size_t Argno = 0; Argno < SysEntries[Nr].NumArgs; ++Argno) {
+      if (!Argno)
+        fprintf(Output, "0x%lX", Args[Argno]);
+
+      else if (Argno == 1) {
+        fputs(", ", Output);
+        printString(reinterpret_cast<const char *>(Args[Argno]),
+                    Args[Argno + 1], Output);
+      } else
+        fprintf(Output, ", 0x%lX", Args[Argno]);
+    }
+    break;
+
+  case __NR_read:
+    fprintf(Output, "0x%lx", Args[0]);
+    break;
+
+  default:
+    for (size_t Argno = 0; Argno < SysEntries[Nr].NumArgs; ++Argno) {
+      if (!Argno)
+        fprintf(Output, "0x%lX", Args[Argno]);
+      else
+        fprintf(Output, ", 0x%lX", Args[Argno]);
+    }
+    break;
+  }
+  fflush(Output);
 }
 
-static VOID SysAfter(std::ostream &Output, ADDRINT Ret) {
-  Output << "and out.\n";
+static VOID SysAfter(FILE *Output, long Ret) {
+  if (Ret > -1)
+    fprintf(Output, ") = 0x%lX\n", Ret);
+  else
+    fprintf(Output, ") = %ld (error)\n", Ret);
+  fflush(Output);
 }
 
 /* ===================================================================== */
@@ -230,26 +312,40 @@ static VOID SysAfter(std::ostream &Output, ADDRINT Ret) {
 
 static VOID SyscallEntry(THREADID ThreadIndex, CONTEXT *Context,
                          SYSCALL_STANDARD Std, VOID *V) {
-  OStreamWrapper *Output = static_cast<OStreamWrapper *>(V);
-  SysBefore(Output->getStream(), PIN_GetContextReg(Context, REG_INST_PTR),
-            PIN_GetSyscallNumber(Context, Std),
-            PIN_GetSyscallArgument(Context, Std, 0),
-            PIN_GetSyscallArgument(Context, Std, 1),
-            PIN_GetSyscallArgument(Context, Std, 2),
-            PIN_GetSyscallArgument(Context, Std, 3),
-            PIN_GetSyscallArgument(Context, Std, 4),
-            PIN_GetSyscallArgument(Context, Std, 5));
+  //FILE *Output = reinterpret_cast<FILE *>(V);
+
+  long LocalArgs[] = {(long)PIN_GetSyscallArgument(Context, Std, 0),
+                      (long)PIN_GetSyscallArgument(Context, Std, 1),
+                      (long)PIN_GetSyscallArgument(Context, Std, 2),
+                      (long)PIN_GetSyscallArgument(Context, Std, 3),
+                      (long)PIN_GetSyscallArgument(Context, Std, 4),
+                      (long)PIN_GetSyscallArgument(Context, Std, 5)};
+
+  SysBefore(Output, PIN_GetContextReg(Context, REG_INST_PTR),
+            PIN_GetSyscallNumber(Context, Std), LocalArgs);
 }
 
 static VOID SyscallExit(THREADID ThreadIndex, CONTEXT *Context,
                         SYSCALL_STANDARD Std, VOID *V) {
-  OStreamWrapper *Output = static_cast<OStreamWrapper *>(V);
-  SysAfter(Output->getStream(), PIN_GetSyscallReturn(Context, Std));
+  //FILE *Output = reinterpret_cast<FILE *>(V);
+
+  // Special case reads to get the read strings
+  if (PIN_GetSyscallNumber(Context, Std) == __NR_read) {
+    fputs(", ", Output);
+    const char *ReadString =
+        reinterpret_cast<const char *>(PIN_GetSyscallArgument(Context, Std, 1));
+    const long Length = PIN_GetSyscallArgument(Context, Std, 2);
+    printString(ReadString, Length, Output);
+    fprintf(Output, ", 0x%lX", Length);
+  }
+
+  SysAfter(Output, (long)PIN_GetSyscallReturn(Context, Std));
 }
 
 static VOID Fini(INT32 Code, VOID *V) {
-  OStreamWrapper *Output = static_cast<OStreamWrapper *>(V);
-  delete Output;
+  //FILE *Output = reinterpret_cast<FILE *>(V);
+  fflush(Output);
+  fclose(Output);
 }
 
 /* ===================================================================== */
@@ -263,21 +359,24 @@ int main(int argc, char *argv[]) {
     return usage();
 
   string FileName = KnobOutputFile.Value();
-
-  OStreamWrapper *Output =
-      FileName.empty() ? new OStreamWrapper() : new OStreamWrapper(FileName);
-
-  cerr << "===============================================" << endl;
-  cerr << "This application is instrumented by PinStace" << endl;
-  if (!KnobOutputFile.Value().empty()) {
-    cerr << "See file " << KnobOutputFile.Value() << " for analysis results"
-         << endl;
+  if (FileName.empty()) {
+    std::cerr << "You have to dump to a file as many applications will close "
+                 "stderr"
+              << std::endl;
+    return -1;
   }
-  cerr << "===============================================" << endl;
+  Output = fopen(FileName.c_str(), "w");
+
+  std::cerr << "===============================================" << std::endl;
+  std::cerr << "This application is instrumented by PinStrace" << std::endl;
+  std::cerr << "See file " << KnobOutputFile.Value() << " for analysis results"
+            << std::endl;
+  std::cerr << "===============================================" << std::endl;
 
   PIN_AddSyscallEntryFunction(SyscallEntry, (VOID *)Output);
   PIN_AddSyscallExitFunction(SyscallExit, (VOID *)Output);
   PIN_AddFiniFunction(Fini, (VOID *)Output);
+
   // Start the program, never returns
   PIN_StartProgram();
 
